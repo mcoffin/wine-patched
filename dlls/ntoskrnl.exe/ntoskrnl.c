@@ -1861,16 +1861,13 @@ NTSTATUS WINAPI FsRtlRegisterUncProvider(PHANDLE MupHandle, PUNICODE_STRING Redi
     return STATUS_NOT_IMPLEMENTED;
 }
 
-static EPROCESS_INTERNAL IoCurrentProcess;
-
 /***********************************************************************
  *           IoGetCurrentProcess / PsGetCurrentProcess   (NTOSKRNL.EXE.@)
  */
 PEPROCESS WINAPI IoGetCurrentProcess(void)
 {
     FIXME("() be-hack\n");
-    IoCurrentProcess.ProcessID = PsGetCurrentProcessId();
-    return (PEPROCESS)&IoCurrentProcess;
+    return (PEPROCESS)GetCurrentProcess();
 }
 
 /***********************************************************************
@@ -2328,7 +2325,6 @@ PVOID WINAPI  MmMapLockedPagesSpecifyCache(PMDLX mdl, KPROCESSOR_MODE AccessMode
     PVOID *addr;
     PVOID *storeAddr = (PVOID *)((char *)mdl + sizeof(MDL));
     HANDLE hProcess = NULL;
-    EPROCESS_INTERNAL *mdlProc = (EPROCESS_INTERNAL *)mdl->Process;
 
     FIXME("(%p, %u, %u, %p, %u, %u): be-hack\n", mdl, AccessMode, CacheType, BaseAddress, BugCheckOnFailure, Priority);
 
@@ -2348,7 +2344,7 @@ PVOID WINAPI  MmMapLockedPagesSpecifyCache(PMDLX mdl, KPROCESSOR_MODE AccessMode
         }
     }
 
-    hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, (DWORD)mdlProc->ProcessID);
+    hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, GetProcessId((HANDLE)mdl->Process));
     if (hProcess) {
         if (ReadProcessMemory(hProcess, (char *)mdl->StartVa + mdl->ByteOffset, addr, mdl->ByteCount, NULL)) {
             storeAddr = (PVOID *)((char *) mdl + sizeof(MDL));
@@ -2413,13 +2409,12 @@ void WINAPI  MmUnlockPages(PMDLX mdl)
     PVOID *addr;
     HANDLE hProcess;
     PVOID *storeAddr = (PVOID *)((char *)mdl + sizeof(MDL));
-    EPROCESS_INTERNAL *mdlProc = (EPROCESS_INTERNAL *)mdl->Process;
 
     FIXME("(%p): be-hack\n", mdl);
 
     addr = *storeAddr;
     if (!addr) return;
-    hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, (DWORD)mdlProc->ProcessID);
+    hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, GetProcessId((HANDLE)mdl->Process));
     if (hProcess) {
         if (!WriteProcessMemory(hProcess, (char *)mdl->StartVa + mdl->ByteOffset, addr, mdl->ByteCount, NULL)) {
             WARN("WriteProcessMemory failure!\n");
@@ -2461,7 +2456,10 @@ NTSTATUS WINAPI ObReferenceObjectByHandle( HANDLE obj, ACCESS_MASK access,
                                            KPROCESSOR_MODE mode, PVOID* ptr,
                                            POBJECT_HANDLE_INFORMATION info)
 {
-    if (GetThreadId(obj)) {
+    DWORD id;
+    id = GetThreadId(obj);
+    if (id) {
+        TRACE("returning thread handle: %x, id, %d\n", obj, id);
         // FIXME: re-interpretation of HANDLE as PKTHREAD
         *ptr = (PVOID)obj;
         return STATUS_SUCCESS;
@@ -3558,13 +3556,8 @@ PKEVENT WINAPI IoCreateNotificationEvent(UNICODE_STRING *name, HANDLE *handle)
  */
 HANDLE WINAPI PsGetProcessId(PEPROCESS Process)
 {
-    if (Process == &IoCurrentProcess) {
-        EPROCESS_INTERNAL *iProcess = (EPROCESS_INTERNAL *)Process;
-        return iProcess->ProcessID;
-    } else {
-        FIXME("Unknown PEPROCESS %p!\n", Process);
-        return (DWORD)Process; // TODO: Investigate why this would even work.
-    }
+    HANDLE hProcess = (HANDLE)Process;
+    return (HANDLE)GetProcessId(hProcess);
 }
 
 
