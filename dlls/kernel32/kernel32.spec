@@ -721,8 +721,8 @@
 @ stdcall GetModuleFileNameA(long ptr long)
 @ stdcall GetModuleFileNameW(long ptr long)
 @ stdcall GetModuleHandleA(str)
-@ stdcall GetModuleHandleExA(long ptr ptr)
-@ stdcall GetModuleHandleExW(long ptr ptr)
+@ stdcall GetModuleHandleExA(long str ptr)
+@ stdcall GetModuleHandleExW(long wstr ptr)
 @ stdcall GetModuleHandleW(wstr)
 # @ stub GetNamedPipeAttribute
 # @ stub GetNamedPipeClientComputerNameA
