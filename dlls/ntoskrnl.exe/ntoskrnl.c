@@ -1887,7 +1887,21 @@ PRKTHREAD WINAPI KeGetCurrentThread(void)
  */
 void WINAPI KeInitializeEvent( PRKEVENT Event, EVENT_TYPE Type, BOOLEAN State )
 {
-    FIXME( "stub: %p %d %d\n", Event, Type, State );
+    NTSTATUS status;
+    PKEVENT_INTERNAL iEvent = (PKEVENT_INTERNAL)&Event->Header.WaitListHead;
+    TRACE("%p, %u, %d\n", Event, Type, State);
+    RtlZeroMemory(Event, sizeof(KEVENT));
+    Event->Header.Type = Type;
+    Event->Header.Size = sizeof(KEVENT) / sizeof(ULONG);
+    Event->Header.SignalState = State;
+    InitializeListHead(&Event->Header.WaitListHead);
+
+    FIXME("Using malformatted KEVENT hack\n");
+    status = NtCreateEvent(&iEvent->EventHandle, EVENT_ALL_ACCESS, NULL, Type, State);
+    if (status != STATUS_SUCCESS) {
+        ERR("NtCreateEvent returned bad status %x\n", status);
+        return;
+    }
 }
 
 
@@ -1896,6 +1910,9 @@ void WINAPI KeInitializeEvent( PRKEVENT Event, EVENT_TYPE Type, BOOLEAN State )
  */
 void WINAPI KeInitializeMutex(PRKMUTEX Mutex, ULONG Level)
 {
+    NTSTATUS status;
+    PKEVENT_INTERNAL iEvent = (PKEVENT_INTERNAL)&Mutex->Header.WaitListHead;
+
     TRACE( "%p, %u\n", Mutex, Level );
     RtlZeroMemory( Mutex, sizeof(KMUTEX) );
     Mutex->Header.Type = 2;
@@ -1903,6 +1920,9 @@ void WINAPI KeInitializeMutex(PRKMUTEX Mutex, ULONG Level)
     Mutex->Header.SignalState = 1;
     InitializeListHead( &Mutex->Header.WaitListHead );
     Mutex->ApcDisable = 1;
+
+    FIXME("Using malformatted KEVENT hack\n");
+    iEvent->EventHandle = CreateMutexW(NULL, FALSE, NULL);
 }
 
 
@@ -1922,8 +1942,20 @@ NTSTATUS WINAPI KeWaitForMutexObject(PRKMUTEX Mutex, KWAIT_REASON WaitReason, KP
  */
 LONG WINAPI KeReleaseMutex(PRKMUTEX Mutex, BOOLEAN Wait)
 {
-    FIXME( "stub: %p, %d\n", Mutex, Wait );
-    return STATUS_SUCCESS;
+    LONG ret;
+    BOOL res;
+    PKEVENT_INTERNAL iEvent = (PKEVENT_INTERNAL)&Mutex->Header.WaitListHead;
+    res = ReleaseMutex(iEvent->EventHandle);
+    switch (res) {
+        case 0:
+            ret = 0x1;
+            break;
+        default:
+            ret = 0x0;
+    }
+    return ret;
+    //FIXME( "stub: %p, %d\n", Mutex, Wait );
+    //return STATUS_SUCCESS;
 }
 
 
@@ -2097,6 +2129,27 @@ VOID WINAPI KeRevertToUserAffinityThread(KAFFINITY Affinity)
     FIXME("(%lx) stub\n", Affinity);
 }
 
+#define TICKS_PER_MS (10000)
+
+static DWORD timeout_to_ms(PLARGE_INTEGER timeout)
+{
+    if (timeout->QuadPart > 0) {
+        // Positive input means absolute time timeout
+        ULARGE_INTEGER now;
+        FILETIME ft;
+        GetSystemTimeAsFileTime(&ft);
+        now.u.LowPart = ft.dwLowDateTime;
+        now.u.HighPart = ft.dwHighDateTime;
+        timeout->QuadPart -= now.QuadPart;
+    } else {
+        // Negative input means relative time timeout
+        timeout->QuadPart = 0 - timeout->QuadPart;
+    }
+    // Now we're in ticks, just convert to milliseconds
+    LONGLONG ms = timeout->QuadPart / TICKS_PER_MS;
+    return (DWORD)ms;
+}
+
 /***********************************************************************
  *           KeWaitForSingleObject   (NTOSKRNL.EXE.@)
  */
@@ -2106,8 +2159,37 @@ NTSTATUS WINAPI KeWaitForSingleObject(PVOID Object,
                                       BOOLEAN Alertable,
                                       PLARGE_INTEGER Timeout)
 {
-    FIXME( "stub: %p, %d, %d, %d, %p\n", Object, WaitReason, WaitMode, Alertable, Timeout );
-    return STATUS_NOT_IMPLEMENTED;
+    DISPATCHER_HEADER *header = (DISPATCHER_HEADER *)Object;
+    if (header->Type <= 2) {
+        // This is either an event object or a mutex
+        PKEVENT_INTERNAL iEvent = (PKEVENT_INTERNAL)&header->WaitListHead;
+        //DWORD waitResponse = WaitForSingleObjectEx(iEvent->EventHandle, timeout_to_ms(Timeout), Alertable);
+        //NTSTATUS ret;
+        //switch (waitResponse) {
+        //    case WAIT_ABANDONED:
+        //        ret = STATUS_ABANDONED;
+        //        break;
+        //    case WAIT_TIMEOUT:
+        //        ret = STATUS_TIMEOUT;
+        //        break;
+        //    case WAIT_OBJECT_0:
+        //        ret = STATUS_SUCCESS;
+        //        break;
+        //    case WAIT_IO_COMPLETION:
+        //        ret = STATUS_USER_APC;
+        //        break;
+        //    default:
+        //        WARN("Unknown mutex wait return %x\n", waitResponse);
+        //        return waitResponse;
+        //}
+        //return ret;
+	NTSTATUS ret = NtWaitForSingleObject(iEvent->EventHandle, Alertable, Timeout);
+	return ret;
+    } else {
+        FIXME( "stub: %p, %d, %d, %d, %p\n", Object, WaitReason, WaitMode, Alertable, Timeout );
+        FIXME("unimplemented type: %d\n", header->Type);
+        return STATUS_NOT_IMPLEMENTED;
+    }
 }
 
 /***********************************************************************
@@ -2379,11 +2461,13 @@ NTSTATUS WINAPI ObReferenceObjectByHandle( HANDLE obj, ACCESS_MASK access,
                                            KPROCESSOR_MODE mode, PVOID* ptr,
                                            POBJECT_HANDLE_INFORMATION info)
 {
-    FIXME( "stub: %p %x %p %d %p %p\n", obj, access, type, mode, ptr, info);
-    FIXME( "Lying about success for anti-cheat systems!\n");
-    // FIXME : We lie about success so BattlEye anti-cheat driver will launch
-    // return STATUS_NOT_IMPLEMENTED;
-    return STATUS_SUCCESS;
+    if (GetThreadId(obj)) {
+        // FIXME: re-interpretation of HANDLE as PKTHREAD
+        *ptr = (PVOID)obj;
+        return STATUS_SUCCESS;
+    }
+    FIXME( "mostly-stub: %p %x %p %d %p %p\n", obj, access, type, mode, ptr, info);
+    return STATUS_NOT_IMPLEMENTED;
 }
 
  /***********************************************************************
