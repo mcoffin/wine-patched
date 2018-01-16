@@ -2096,8 +2096,22 @@ LONG WINAPI KeResetEvent( PRKEVENT Event )
  */
 LONG WINAPI KeSetEvent( PRKEVENT Event, KPRIORITY Increment, BOOLEAN Wait )
 {
+    NTSTATUS status;
+    ULONG prev = 0;
+    PKEVENT_INTERNAL iEvent = (PKEVENT_INTERNAL)&Event->Header.WaitListHead;
+
+    if (Wait) {
+        FIXME("wait-mode not implemented\n");
+    }
+
     FIXME("(%p, %d, %d): stub\n", Event, Increment, Wait);
-    return 0;
+
+    FIXME("Using malformed KEVENT hack\n");
+    status = NtSetEvent(iEvent->EventHandle, &prev);
+    if (status != STATUS_SUCCESS) {
+        ERR("ZwSetEvent failed with status %x\n", status);
+    }
+    return prev;
 }
 
 

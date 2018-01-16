@@ -688,6 +688,8 @@ BOOL WINAPI GetModuleHandleExW( DWORD flags, LPCWSTR name, HMODULE *module )
     ULONG_PTR magic;
     BOOL lock;
 
+    static const WCHAR mscoreeName[] = { 'm', 's', 'c', 'o', 'r', 'e', 'e', '.', 'd', 'l', 'l', 0 };
+
     if (!module)
     {
         SetLastError( ERROR_INVALID_PARAMETER );
@@ -713,6 +715,10 @@ BOOL WINAPI GetModuleHandleExW( DWORD flags, LPCWSTR name, HMODULE *module )
         UNICODE_STRING wstr;
         RtlInitUnicodeString( &wstr, name );
         status = LdrGetDllHandle( NULL, 0, &wstr, &ret );
+        //if (status != STATUS_SUCCESS && !strcmpW(name, mscoreeName)) {
+        //    ret = LoadLibraryW(name);
+        //    if (ret) status = STATUS_SUCCESS;
+        //}
     }
 
     if (status == STATUS_SUCCESS)
