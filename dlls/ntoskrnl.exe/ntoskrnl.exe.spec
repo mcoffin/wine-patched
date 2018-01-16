@@ -1489,6 +1489,16 @@
 @ cdecl -private wcstombs(ptr ptr long) msvcrt.wcstombs
 @ cdecl -private wctomb(ptr long) msvcrt.wctomb
 
+# BattlEye
+@ stdcall ObRegisterCallbacks(ptr ptr)
+@ stdcall ObUnRegisterCallbacks(ptr)
+@ stdcall ObGetFilterVersion()
+@ stdcall PsSetCreateProcessNotifyRoutineEx(ptr long) PsSetCreateProcessNotifyRoutine
+@ stub PsAcquireProcessExitSynchronization
+@ stub PsReleaseProcessExitSynchronization
+@ stub ExfUnblockPushLock
+@ stdcall -arch=x86_64 __C_specific_handler(ptr long ptr ptr) ntdll.__C_specific_handler
+
 ################################################################
 # Wine internal extensions
 #

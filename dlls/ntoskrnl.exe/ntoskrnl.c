@@ -2380,7 +2380,10 @@ NTSTATUS WINAPI ObReferenceObjectByHandle( HANDLE obj, ACCESS_MASK access,
                                            POBJECT_HANDLE_INFORMATION info)
 {
     FIXME( "stub: %p %x %p %d %p %p\n", obj, access, type, mode, ptr, info);
-    return STATUS_NOT_IMPLEMENTED;
+    FIXME( "Lying about success for anti-cheat systems!\n");
+    // FIXME : We lie about success so BattlEye anti-cheat driver will launch
+    // return STATUS_NOT_IMPLEMENTED;
+    return STATUS_SUCCESS;
 }
 
  /***********************************************************************
@@ -3471,6 +3474,42 @@ PKEVENT WINAPI IoCreateNotificationEvent(UNICODE_STRING *name, HANDLE *handle)
  */
 HANDLE WINAPI PsGetProcessId(PEPROCESS Process)
 {
-    EPROCESS_INTERNAL *iProcess = (EPROCESS_INTERNAL *)Process;
-    return iProcess->ProcessID;
+    if (Process == &IoCurrentProcess) {
+        EPROCESS_INTERNAL *iProcess = (EPROCESS_INTERNAL *)Process;
+        return iProcess->ProcessID;
+    } else {
+        FIXME("Unknown PEPROCESS %p!\n", Process);
+        return (DWORD)Process; // TODO: Investigate why this would even work.
+    }
+}
+
+
+/***********************************************************************
+ *           ObRegisterCallbacks (NTOSKRNL.EXE.@)
+ */
+NTSTATUS WINAPI ObRegisterCallbacks(POB_CALLBACK_REGISTRATION CallBackRegistration, PVOID *RegistrationHandle)
+{
+    FIXME("(%p, %p): stub!\n", CallBackRegistration, RegistrationHandle);
+    FIXME("Lying about success for anti-cheat systems!\n");
+    // FIXME: We lie here so anti-cheat systems think this call succeeded
+    // return STATUS_NOT_IMPLEMENTED;
+    return STATUS_SUCCESS;
+}
+
+/***********************************************************************
+ *           ObUnRegisterCallbacks (NTOSKRNL.EXE.@)
+ */
+void WINAPI ObUnRegisterCallbacks(PVOID RegistrationHandle)
+{
+    // We don't do anything here since ObRegisterCallbacks does nothing
+    FIXME("(%p): stub!\n", RegistrationHandle);
+}
+
+/***********************************************************************
+ *           ObGetFilterVersion (NTOSKRNL.EXE.@)
+ */
+USHORT WINAPI ObGetFilterVersion(void)
+{
+    FIXME("stub!\n");
+    return 0x0;
 }
