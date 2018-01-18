@@ -1256,6 +1256,9 @@ BOOL WINAPI StartServiceW(SC_HANDLE hService, DWORD dwNumServiceArgs,
                           LPCWSTR *lpServiceArgVectors)
 {
     DWORD err;
+    SERVICE_STATUS status;
+    BOOL queryErr;
+    DWORD lastCheckpoint, lastStatus;
 
     TRACE("%p %d %p\n", hService, dwNumServiceArgs, lpServiceArgVectors);
 
@@ -1272,6 +1275,21 @@ BOOL WINAPI StartServiceW(SC_HANDLE hService, DWORD dwNumServiceArgs,
     {
         SetLastError(err);
         return FALSE;
+    }
+
+    FIXME("be-hack\n");
+    if ((queryErr = QueryServiceStatus(hService, &status))) {
+        while (status.dwServiceType == 0x30 && status.dwCurrentState == SERVICE_START_PENDING) {
+            lastStatus = status.dwCurrentState;
+            lastCheckpoint = status.dwCheckPoint;
+            Sleep(status.dwWaitHint);
+            QueryServiceStatus(hService, &status);
+            if (lastStatus == status.dwCurrentState && lastCheckpoint == status.dwCheckPoint) {
+                FIXME("Failed to wait for the service to start\n");
+                return FALSE;
+            }
+        }
+        FIXME("Successfully waited for the service to start\n");
     }
 
     return TRUE;
@@ -1308,6 +1326,13 @@ BOOL WINAPI QueryServiceStatus(SC_HANDLE hService,
     ret = QueryServiceStatusEx(hService, SC_STATUS_PROCESS_INFO, (LPBYTE)&SvcStatusData,
                                 sizeof(SERVICE_STATUS_PROCESS), &dummy);
     if (ret) memcpy(lpservicestatus, &SvcStatusData, sizeof(SERVICE_STATUS)) ;
+    TRACE("    dwServiceType: %d\n", lpservicestatus->dwServiceType);
+    TRACE("    dwCurrentState: %d\n", lpservicestatus->dwCurrentState);
+    TRACE("    dwControlsAccepted: %d\n", lpservicestatus->dwControlsAccepted);
+    TRACE("    dwWin32ExitCode: %d\n", lpservicestatus->dwWin32ExitCode);
+    TRACE("    dwServiceSpecificExitCode: %d\n", lpservicestatus->dwServiceSpecificExitCode);
+    TRACE("    dwCheckPoint: %d\n", lpservicestatus->dwCheckPoint);
+    TRACE("    dwWaitHint: %d\n", lpservicestatus->dwWaitHint);
     return ret;
 }
 

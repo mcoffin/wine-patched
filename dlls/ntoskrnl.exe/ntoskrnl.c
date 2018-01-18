@@ -3551,7 +3551,11 @@ PKEVENT WINAPI IoCreateNotificationEvent(UNICODE_STRING *name, HANDLE *handle)
 HANDLE WINAPI PsGetProcessId(PEPROCESS Process)
 {
     HANDLE hProcess = (HANDLE)Process;
-    return (HANDLE)GetProcessId(hProcess);
+    DWORD pid = GetProcessId(hProcess);
+    if (pid == 0) {
+        WARN("got id %x for PEPROCESS %p\n", pid, Process);
+    }
+    return (HANDLE)pid;
 }
 
 
