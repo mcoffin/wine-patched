@@ -2170,36 +2170,22 @@ NTSTATUS WINAPI KeWaitForSingleObject(PVOID Object,
                                       BOOLEAN Alertable,
                                       PLARGE_INTEGER Timeout)
 {
-    DISPATCHER_HEADER *header = (DISPATCHER_HEADER *)Object;
-    if (header->Type <= 2) {
-        // This is either an event object or a mutex
-        PKEVENT_INTERNAL iEvent = (PKEVENT_INTERNAL)&header->WaitListHead;
-        //DWORD waitResponse = WaitForSingleObjectEx(iEvent->EventHandle, timeout_to_ms(Timeout), Alertable);
-        //NTSTATUS ret;
-        //switch (waitResponse) {
-        //    case WAIT_ABANDONED:
-        //        ret = STATUS_ABANDONED;
-        //        break;
-        //    case WAIT_TIMEOUT:
-        //        ret = STATUS_TIMEOUT;
-        //        break;
-        //    case WAIT_OBJECT_0:
-        //        ret = STATUS_SUCCESS;
-        //        break;
-        //    case WAIT_IO_COMPLETION:
-        //        ret = STATUS_USER_APC;
-        //        break;
-        //    default:
-        //        WARN("Unknown mutex wait return %x\n", waitResponse);
-        //        return waitResponse;
-        //}
-        //return ret;
-	NTSTATUS ret = NtWaitForSingleObject(iEvent->EventHandle, Alertable, Timeout);
-	return ret;
+    HANDLE handle;
+    if (MmIsAddressValid(Object)) {
+        // This is likely one of our faked raw objects
+        DISPATCHER_HEADER *header = (DISPATCHER_HEADER *)Object;
+        if (header->Type <= 2) {
+            // This is either an event object or a mutex
+            PKEVENT_INTERNAL iEvent = (PKEVENT_INTERNAL)&header->WaitListHead;
+            return KeWaitForSingleObject((PVOID)iEvent->EventHandle, WaitReason, WaitMode, Alertable, Timeout);
+        } else {
+            FIXME( "stub: %p, %d, %d, %d, %p\n", Object, WaitReason, WaitMode, Alertable, Timeout );
+            FIXME("unimplemented raw object type: %d\n", header->Type);
+            return STATUS_NOT_IMPLEMENTED;
+        }
     } else {
-        FIXME( "stub: %p, %d, %d, %d, %p\n", Object, WaitReason, WaitMode, Alertable, Timeout );
-        FIXME("unimplemented type: %d\n", header->Type);
-        return STATUS_NOT_IMPLEMENTED;
+        handle = (HANDLE)Object;
+        return NtWaitForSingleObject(handle, Alertable, Timeout);
     }
 }
 
@@ -2470,16 +2456,10 @@ NTSTATUS WINAPI ObReferenceObjectByHandle( HANDLE obj, ACCESS_MASK access,
                                            KPROCESSOR_MODE mode, PVOID* ptr,
                                            POBJECT_HANDLE_INFORMATION info)
 {
-    DWORD id;
-    id = GetThreadId(obj);
-    if (id) {
-        TRACE("returning thread handle: %x, id, %d\n", obj, id);
-        // FIXME: re-interpretation of HANDLE as PKTHREAD
-        *ptr = (PVOID)obj;
-        return STATUS_SUCCESS;
-    }
-    FIXME( "mostly-stub: %p %x %p %d %p %p\n", obj, access, type, mode, ptr, info);
-    return STATUS_NOT_IMPLEMENTED;
+    // Since we can't actually reference objects, we're just going to grab the handle
+    FIXME("(%p, %x, %p, %d, %p, %p): be-hack\n", obj, access, type, mode, ptr, info);
+    *ptr = (PVOID)obj;
+    return STATUS_SUCCESS;
 }
 
  /***********************************************************************
@@ -2598,9 +2578,9 @@ DEVICE_OBJECT* WINAPI IoGetAttachedDeviceReference( DEVICE_OBJECT *device )
  *           PsCreateSystemThread   (NTOSKRNL.EXE.@)
  */
 NTSTATUS WINAPI PsCreateSystemThread(PHANDLE ThreadHandle, ULONG DesiredAccess,
-				     POBJECT_ATTRIBUTES ObjectAttributes,
-			             HANDLE ProcessHandle, PCLIENT_ID ClientId,
-                                     PKSTART_ROUTINE StartRoutine, PVOID StartContext)
+                     POBJECT_ATTRIBUTES ObjectAttributes,
+                     HANDLE ProcessHandle, PCLIENT_ID ClientId,
+                     PKSTART_ROUTINE StartRoutine, PVOID StartContext)
 {
     if (!ProcessHandle) ProcessHandle = GetCurrentProcess();
     return RtlCreateUserThread(ProcessHandle, 0, FALSE, 0, 0,
