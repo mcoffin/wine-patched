@@ -1,7 +1,7 @@
 EXTRADEFS = -D_NTSYSTEM_
 MODULE    = ntdll.dll
-IMPORTLIB = ntdll
-IMPORTS   = winecrt0
+IMPORTLIB = ntdll kernel32
+IMPORTS   = winecrt0 kernel32
 EXTRALIBS = $(IOKIT_LIBS) $(RT_LIBS) $(PTHREAD_LIBS)
 EXTRADLLFLAGS = -nodefaultlibs -Wl,--image-base,0x7bc00000
 

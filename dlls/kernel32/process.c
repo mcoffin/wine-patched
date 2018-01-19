@@ -1913,7 +1913,7 @@ static int get_process_cpu( const WCHAR *filename, const struct binary_info *bin
     return -1;
 }
 
-/***********************************************************************
+/**********************************************************************r
  *           exec_loader
  */
 static pid_t exec_loader( LPCWSTR cmd_line, unsigned int flags, int socketfd,

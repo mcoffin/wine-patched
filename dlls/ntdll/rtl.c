@@ -30,8 +30,15 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 #ifdef HAVE_NETINET_IN_H
 #include <netinet/in.h>
+#endif
+#ifdef HAVE_SYS_SOCKET_H
+#include <sys/socket.h>
+#endif
+#ifdef HAVE_SYS_WAIT_H
+# include <sys/wait.h>
 #endif
 #include "ntstatus.h"
 #define NONAMELESSUNION
@@ -42,6 +49,7 @@
 #include "winternl.h"
 #include "wine/debug.h"
 #include "wine/exception.h"
+#include "wine/library.h"
 #include "wine/unicode.h"
 #include "ntdll_misc.h"
 #include "inaddr.h"
@@ -109,11 +117,11 @@ static const DWORD CRC_table[256] =
 };
 
 /*
- *	resource functions
+ *    resource functions
  */
 
 /***********************************************************************
- *           RtlInitializeResource	(NTDLL.@)
+ *           RtlInitializeResource    (NTDLL.@)
  *
  * xxxResource() functions implement multiple-reader-single-writer lock.
  * The code is based on information published in WDJ January 1999 issue.
@@ -122,12 +130,12 @@ void WINAPI RtlInitializeResource(LPRTL_RWLOCK rwl)
 {
     if( rwl )
     {
-	rwl->iNumberActive = 0;
-	rwl->uExclusiveWaiters = 0;
-	rwl->uSharedWaiters = 0;
-	rwl->hOwningThreadId = 0;
-	rwl->dwTimeoutBoost = 0; /* no info on this one, default value is 0 */
-	RtlInitializeCriticalSection( &rwl->rtlCS );
+    rwl->iNumberActive = 0;
+    rwl->uExclusiveWaiters = 0;
+    rwl->uSharedWaiters = 0;
+    rwl->hOwningThreadId = 0;
+    rwl->dwTimeoutBoost = 0; /* no info on this one, default value is 0 */
+    RtlInitializeCriticalSection( &rwl->rtlCS );
         rwl->rtlCS.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": RTL_RWLOCK.rtlCS");
         NtCreateSemaphore( &rwl->hExclusiveReleaseSemaphore, SEMAPHORE_ALL_ACCESS, NULL, 0, 65535 );
         NtCreateSemaphore( &rwl->hSharedReleaseSemaphore, SEMAPHORE_ALL_ACCESS, NULL, 0, 65535 );
@@ -136,29 +144,29 @@ void WINAPI RtlInitializeResource(LPRTL_RWLOCK rwl)
 
 
 /***********************************************************************
- *           RtlDeleteResource		(NTDLL.@)
+ *           RtlDeleteResource        (NTDLL.@)
  */
 void WINAPI RtlDeleteResource(LPRTL_RWLOCK rwl)
 {
     if( rwl )
     {
-	RtlEnterCriticalSection( &rwl->rtlCS );
-	if( rwl->iNumberActive || rwl->uExclusiveWaiters || rwl->uSharedWaiters )
-	    ERR("Deleting active MRSW lock (%p), expect failure\n", rwl );
-	rwl->hOwningThreadId = 0;
-	rwl->uExclusiveWaiters = rwl->uSharedWaiters = 0;
-	rwl->iNumberActive = 0;
-	NtClose( rwl->hExclusiveReleaseSemaphore );
-	NtClose( rwl->hSharedReleaseSemaphore );
-	RtlLeaveCriticalSection( &rwl->rtlCS );
-	rwl->rtlCS.DebugInfo->Spare[0] = 0;
-	RtlDeleteCriticalSection( &rwl->rtlCS );
+    RtlEnterCriticalSection( &rwl->rtlCS );
+    if( rwl->iNumberActive || rwl->uExclusiveWaiters || rwl->uSharedWaiters )
+        ERR("Deleting active MRSW lock (%p), expect failure\n", rwl );
+    rwl->hOwningThreadId = 0;
+    rwl->uExclusiveWaiters = rwl->uSharedWaiters = 0;
+    rwl->iNumberActive = 0;
+    NtClose( rwl->hExclusiveReleaseSemaphore );
+    NtClose( rwl->hSharedReleaseSemaphore );
+    RtlLeaveCriticalSection( &rwl->rtlCS );
+    rwl->rtlCS.DebugInfo->Spare[0] = 0;
+    RtlDeleteCriticalSection( &rwl->rtlCS );
     }
 }
 
 
 /***********************************************************************
- *          RtlAcquireResourceExclusive	(NTDLL.@)
+ *          RtlAcquireResourceExclusive    (NTDLL.@)
  */
 BYTE WINAPI RtlAcquireResourceExclusive(LPRTL_RWLOCK rwl, BYTE fWait)
 {
@@ -169,44 +177,44 @@ start:
     RtlEnterCriticalSection( &rwl->rtlCS );
     if( rwl->iNumberActive == 0 ) /* lock is free */
     {
-	rwl->iNumberActive = -1;
-	retVal = 1;
+    rwl->iNumberActive = -1;
+    retVal = 1;
     }
     else if( rwl->iNumberActive < 0 ) /* exclusive lock in progress */
     {
-	 if( rwl->hOwningThreadId == ULongToHandle(GetCurrentThreadId()) )
-	 {
-	     retVal = 1;
-	     rwl->iNumberActive--;
-	     goto done;
-	 }
+     if( rwl->hOwningThreadId == ULongToHandle(GetCurrentThreadId()) )
+     {
+         retVal = 1;
+         rwl->iNumberActive--;
+         goto done;
+     }
 wait:
-	 if( fWait )
-	 {
+     if( fWait )
+     {
              NTSTATUS status;
 
-	     rwl->uExclusiveWaiters++;
+         rwl->uExclusiveWaiters++;
 
-	     RtlLeaveCriticalSection( &rwl->rtlCS );
-	     status = NtWaitForSingleObject( rwl->hExclusiveReleaseSemaphore, FALSE, NULL );
-	     if( HIWORD(status) )
-		 goto done;
-	     goto start; /* restart the acquisition to avoid deadlocks */
-	 }
+         RtlLeaveCriticalSection( &rwl->rtlCS );
+         status = NtWaitForSingleObject( rwl->hExclusiveReleaseSemaphore, FALSE, NULL );
+         if( HIWORD(status) )
+         goto done;
+         goto start; /* restart the acquisition to avoid deadlocks */
+     }
     }
     else  /* one or more shared locks are in progress */
-	 if( fWait )
-	     goto wait;
+     if( fWait )
+         goto wait;
 
     if( retVal == 1 )
-	rwl->hOwningThreadId = ULongToHandle(GetCurrentThreadId());
+    rwl->hOwningThreadId = ULongToHandle(GetCurrentThreadId());
 done:
     RtlLeaveCriticalSection( &rwl->rtlCS );
     return retVal;
 }
 
 /***********************************************************************
- *          RtlAcquireResourceShared	(NTDLL.@)
+ *          RtlAcquireResourceShared    (NTDLL.@)
  */
 BYTE WINAPI RtlAcquireResourceShared(LPRTL_RWLOCK rwl, BYTE fWait)
 {
@@ -218,28 +226,28 @@ start:
     RtlEnterCriticalSection( &rwl->rtlCS );
     if( rwl->iNumberActive < 0 )
     {
-	if( rwl->hOwningThreadId == ULongToHandle(GetCurrentThreadId()) )
-	{
-	    rwl->iNumberActive--;
-	    retVal = 1;
-	    goto done;
-	}
+    if( rwl->hOwningThreadId == ULongToHandle(GetCurrentThreadId()) )
+    {
+        rwl->iNumberActive--;
+        retVal = 1;
+        goto done;
+    }
 
-	if( fWait )
-	{
-	    rwl->uSharedWaiters++;
-	    RtlLeaveCriticalSection( &rwl->rtlCS );
-	    status = NtWaitForSingleObject( rwl->hSharedReleaseSemaphore, FALSE, NULL );
-	    if( HIWORD(status) )
-		goto done;
-	    goto start;
-	}
+    if( fWait )
+    {
+        rwl->uSharedWaiters++;
+        RtlLeaveCriticalSection( &rwl->rtlCS );
+        status = NtWaitForSingleObject( rwl->hSharedReleaseSemaphore, FALSE, NULL );
+        if( HIWORD(status) )
+        goto done;
+        goto start;
+    }
     }
     else
     {
-	if( status != STATUS_WAIT_0 ) /* otherwise RtlReleaseResource() has already done it */
-	    rwl->iNumberActive++;
-	retVal = 1;
+    if( status != STATUS_WAIT_0 ) /* otherwise RtlReleaseResource() has already done it */
+        rwl->iNumberActive++;
+    retVal = 1;
     }
 done:
     RtlLeaveCriticalSection( &rwl->rtlCS );
@@ -248,7 +256,7 @@ done:
 
 
 /***********************************************************************
- *           RtlReleaseResource		(NTDLL.@)
+ *           RtlReleaseResource        (NTDLL.@)
  */
 void WINAPI RtlReleaseResource(LPRTL_RWLOCK rwl)
 {
@@ -256,59 +264,59 @@ void WINAPI RtlReleaseResource(LPRTL_RWLOCK rwl)
 
     if( rwl->iNumberActive > 0 ) /* have one or more readers */
     {
-	if( --rwl->iNumberActive == 0 )
-	{
-	    if( rwl->uExclusiveWaiters )
-	    {
+    if( --rwl->iNumberActive == 0 )
+    {
+        if( rwl->uExclusiveWaiters )
+        {
 wake_exclusive:
-		rwl->uExclusiveWaiters--;
-		NtReleaseSemaphore( rwl->hExclusiveReleaseSemaphore, 1, NULL );
-	    }
-	}
+        rwl->uExclusiveWaiters--;
+        NtReleaseSemaphore( rwl->hExclusiveReleaseSemaphore, 1, NULL );
+        }
+    }
     }
     else
     if( rwl->iNumberActive < 0 ) /* have a writer, possibly recursive */
     {
-	if( ++rwl->iNumberActive == 0 )
-	{
-	    rwl->hOwningThreadId = 0;
-	    if( rwl->uExclusiveWaiters )
-		goto wake_exclusive;
-	    else
-		if( rwl->uSharedWaiters )
-		{
-		    UINT n = rwl->uSharedWaiters;
-		    rwl->iNumberActive = rwl->uSharedWaiters; /* prevent new writers from joining until
-							       * all queued readers have done their thing */
-		    rwl->uSharedWaiters = 0;
-		    NtReleaseSemaphore( rwl->hSharedReleaseSemaphore, n, NULL );
-		}
-	}
+    if( ++rwl->iNumberActive == 0 )
+    {
+        rwl->hOwningThreadId = 0;
+        if( rwl->uExclusiveWaiters )
+        goto wake_exclusive;
+        else
+        if( rwl->uSharedWaiters )
+        {
+            UINT n = rwl->uSharedWaiters;
+            rwl->iNumberActive = rwl->uSharedWaiters; /* prevent new writers from joining until
+                                   * all queued readers have done their thing */
+            rwl->uSharedWaiters = 0;
+            NtReleaseSemaphore( rwl->hSharedReleaseSemaphore, n, NULL );
+        }
+    }
     }
     RtlLeaveCriticalSection( &rwl->rtlCS );
 }
 
 
 /***********************************************************************
- *           RtlDumpResource		(NTDLL.@)
+ *           RtlDumpResource        (NTDLL.@)
  */
 void WINAPI RtlDumpResource(LPRTL_RWLOCK rwl)
 {
     if( rwl )
     {
-	MESSAGE("RtlDumpResource(%p):\n\tactive count = %i\n\twaiting readers = %i\n\twaiting writers = %i\n",
-		rwl, rwl->iNumberActive, rwl->uSharedWaiters, rwl->uExclusiveWaiters );
-	if( rwl->iNumberActive )
-	    MESSAGE("\towner thread = %p\n", rwl->hOwningThreadId );
+    MESSAGE("RtlDumpResource(%p):\n\tactive count = %i\n\twaiting readers = %i\n\twaiting writers = %i\n",
+        rwl, rwl->iNumberActive, rwl->uSharedWaiters, rwl->uExclusiveWaiters );
+    if( rwl->iNumberActive )
+        MESSAGE("\towner thread = %p\n", rwl->hOwningThreadId );
     }
 }
 
 /*
- *	misc functions
+ *    misc functions
  */
 
 /******************************************************************************
- *	DbgPrint	[NTDLL.@]
+ *    DbgPrint    [NTDLL.@]
  */
 NTSTATUS WINAPIV DbgPrint(LPCSTR fmt, ...)
 {
@@ -326,7 +334,7 @@ NTSTATUS WINAPIV DbgPrint(LPCSTR fmt, ...)
 
 
 /******************************************************************************
- *	DbgPrintEx	[NTDLL.@]
+ *    DbgPrintEx    [NTDLL.@]
  */
 NTSTATUS WINAPIV DbgPrintEx(ULONG iComponentId, ULONG Level, LPCSTR fmt, ...)
 {
@@ -340,7 +348,7 @@ NTSTATUS WINAPIV DbgPrintEx(ULONG iComponentId, ULONG Level, LPCSTR fmt, ...)
 }
 
 /******************************************************************************
- *	vDbgPrintEx	[NTDLL.@]
+ *    vDbgPrintEx    [NTDLL.@]
  */
 NTSTATUS WINAPI vDbgPrintEx( ULONG id, ULONG level, LPCSTR fmt, __ms_va_list args )
 {
@@ -348,7 +356,7 @@ NTSTATUS WINAPI vDbgPrintEx( ULONG id, ULONG level, LPCSTR fmt, __ms_va_list arg
 }
 
 /******************************************************************************
- *	vDbgPrintExWithPrefix  [NTDLL.@]
+ *    vDbgPrintExWithPrefix  [NTDLL.@]
  */
 NTSTATUS WINAPI vDbgPrintExWithPrefix( LPCSTR prefix, ULONG id, ULONG level, LPCSTR fmt, __ms_va_list args )
 {
@@ -368,7 +376,7 @@ NTSTATUS WINAPI vDbgPrintExWithPrefix( LPCSTR prefix, ULONG id, ULONG level, LPC
 }
 
 /******************************************************************************
- *  RtlAcquirePebLock		[NTDLL.@]
+ *  RtlAcquirePebLock        [NTDLL.@]
  */
 VOID WINAPI RtlAcquirePebLock(void)
 {
@@ -376,7 +384,7 @@ VOID WINAPI RtlAcquirePebLock(void)
 }
 
 /******************************************************************************
- *  RtlReleasePebLock		[NTDLL.@]
+ *  RtlReleasePebLock        [NTDLL.@]
  */
 VOID WINAPI RtlReleasePebLock(void)
 {
@@ -384,7 +392,7 @@ VOID WINAPI RtlReleasePebLock(void)
 }
 
 /******************************************************************************
- *  RtlNewSecurityObject		[NTDLL.@]
+ *  RtlNewSecurityObject        [NTDLL.@]
  */
 NTSTATUS WINAPI
 RtlNewSecurityObject( PSECURITY_DESCRIPTOR ParentDescriptor,
@@ -400,7 +408,7 @@ RtlNewSecurityObject( PSECURITY_DESCRIPTOR ParentDescriptor,
 }
 
 /******************************************************************************
- *  RtlDeleteSecurityObject		[NTDLL.@]
+ *  RtlDeleteSecurityObject        [NTDLL.@]
  */
 NTSTATUS WINAPI
 RtlDeleteSecurityObject( PSECURITY_DESCRIPTOR *ObjectDescriptor )
@@ -696,13 +704,13 @@ ULONG WINAPI RtlUniform (PULONG seed)
     */
     result = *seed * 0xffffffed + 0x7fffffc3;
     if (result == 0xffffffff || result == 0x7ffffffe) {
-	result = (result + 2) & MAXLONG;
+    result = (result + 2) & MAXLONG;
     } else if (result == 0x7fffffff) {
-	result = 0;
+    result = 0;
     } else if ((result & 0x80000000) == 0) {
-	result = result + (~result & 1);
+    result = result + (~result & 1);
     } else {
-	result = (result + (result & 1)) & MAXLONG;
+    result = (result + (result & 1)) & MAXLONG;
     } /* if */
     *seed = result;
     return result;
@@ -803,19 +811,19 @@ void WINAPI RtlMapGenericMask(
     const GENERIC_MAPPING *GenericMapping)
 {
     if (*AccessMask & GENERIC_READ) {
-	*AccessMask |= GenericMapping->GenericRead;
+    *AccessMask |= GenericMapping->GenericRead;
     } /* if */
 
     if (*AccessMask & GENERIC_WRITE) {
-	*AccessMask |= GenericMapping->GenericWrite;
+    *AccessMask |= GenericMapping->GenericWrite;
     } /* if */
 
     if (*AccessMask & GENERIC_EXECUTE) {
-	*AccessMask |= GenericMapping->GenericExecute;
+    *AccessMask |= GenericMapping->GenericExecute;
     } /* if */
 
     if (*AccessMask & GENERIC_ALL) {
-	*AccessMask |= GenericMapping->GenericAll;
+    *AccessMask |= GenericMapping->GenericAll;
     } /* if */
 
     *AccessMask &= 0x0FFFFFFF;
@@ -1261,7 +1269,7 @@ PSLIST_ENTRY WINAPI RtlInterlockedPushListSList(PSLIST_HEADER list, PSLIST_ENTRY
 }
 
 /******************************************************************************
- *  RtlGetCompressionWorkSpaceSize		[NTDLL.@]
+ *  RtlGetCompressionWorkSpaceSize        [NTDLL.@]
  */
 NTSTATUS WINAPI RtlGetCompressionWorkSpaceSize(USHORT format, PULONG compress_workspace,
                                                PULONG decompress_workspace)
@@ -1323,7 +1331,7 @@ static NTSTATUS lznt1_compress(UCHAR *src, ULONG src_size, UCHAR *dst, ULONG dst
 }
 
 /******************************************************************************
- *  RtlCompressBuffer		[NTDLL.@]
+ *  RtlCompressBuffer        [NTDLL.@]
  */
 NTSTATUS WINAPI RtlCompressBuffer(USHORT format, PUCHAR uncompressed, ULONG uncompressed_size,
                                   PUCHAR compressed, ULONG compressed_size, ULONG chunk_size,
@@ -1526,7 +1534,7 @@ out:
 }
 
 /******************************************************************************
- *  RtlDecompressFragment	[NTDLL.@]
+ *  RtlDecompressFragment    [NTDLL.@]
  */
 NTSTATUS WINAPI RtlDecompressFragment(USHORT format, PUCHAR uncompressed, ULONG uncompressed_size,
                                PUCHAR compressed, ULONG compressed_size, ULONG offset,
@@ -1553,7 +1561,7 @@ NTSTATUS WINAPI RtlDecompressFragment(USHORT format, PUCHAR uncompressed, ULONG 
 
 
 /******************************************************************************
- *  RtlDecompressBuffer		[NTDLL.@]
+ *  RtlDecompressBuffer        [NTDLL.@]
  */
 NTSTATUS WINAPI RtlDecompressBuffer(USHORT format, PUCHAR uncompressed, ULONG uncompressed_size,
                                     PUCHAR compressed, ULONG compressed_size, PULONG final_size)
@@ -1566,7 +1574,7 @@ NTSTATUS WINAPI RtlDecompressBuffer(USHORT format, PUCHAR uncompressed, ULONG un
 }
 
 /***********************************************************************
- *  RtlSetThreadErrorMode 	[NTDLL.@]
+ *  RtlSetThreadErrorMode     [NTDLL.@]
  *
  * Set the thread local error mode.
  *
@@ -1591,7 +1599,7 @@ NTSTATUS WINAPI RtlSetThreadErrorMode( DWORD mode, LPDWORD oldmode )
 }
 
 /***********************************************************************
- *  RtlGetThreadErrorMode 	[NTDLL.@]
+ *  RtlGetThreadErrorMode     [NTDLL.@]
  *
  * Get the thread local error mode.
  *
@@ -1652,6 +1660,954 @@ void WINAPI RtlInsertElementGenericTableAvl(PRTL_AVL_TABLE table, void *buffer, 
     FIXME("%p %p %u %p: stub\n", table, buffer, size, element);
 }
 
+// FIXME: from kernel32
+enum binary_type
+{
+    BINARY_UNKNOWN = 0,
+    BINARY_PE,
+    BINARY_WIN16,
+    BINARY_OS216,
+    BINARY_DOS,
+    BINARY_UNIX_EXE,
+    BINARY_UNIX_LIB
+};
+#define BINARY_FLAG_DLL     0x01
+#define BINARY_FLAG_64BIT   0x02
+#define BINARY_FLAG_FAKEDLL 0x04
+struct binary_info
+{
+    enum binary_type type;
+    DWORD            arch;
+    DWORD            flags;
+    ULONGLONG        res_start;
+    ULONGLONG        res_end;
+};
+static inline BOOL is_console_handle(HANDLE h)
+{
+    return h != INVALID_HANDLE_VALUE && ((UINT_PTR)h & 3) == 3;
+}
+/* map a real wineserver handle onto a kernel32 console handle */
+static inline HANDLE console_handle_map(HANDLE h)
+{
+    return h != INVALID_HANDLE_VALUE ? (HANDLE)((UINT_PTR)h ^ 3) : INVALID_HANDLE_VALUE;
+}
+/* map a kernel32 console handle onto a real wineserver handle */
+static inline obj_handle_t console_handle_unmap(HANDLE h)
+{
+    return wine_server_obj_handle( h != INVALID_HANDLE_VALUE ? (HANDLE)((UINT_PTR)h ^ 3) : INVALID_HANDLE_VALUE );
+}
+/* Some Wine specific values for Console inheritance (params->ConsoleHandle) */
+#define KERNEL32_CONSOLE_ALLOC          ((HANDLE)1)
+#define KERNEL32_CONSOLE_SHELL          ((HANDLE)2)
+
+// FIXME: from kernel32
+static inline DWORD append_string( void **ptr, const WCHAR *str )
+{
+    DWORD len = strlenW( str );
+    memcpy( *ptr, str, len * sizeof(WCHAR) );
+    *ptr = (WCHAR *)*ptr + len;
+    return len * sizeof(WCHAR);
+}
+
+// Credit to ReactOS
+static NTSTATUS create_image_file_section(PUNICODE_STRING image_file_name, ULONG attributes, PHANDLE section)
+{
+    NTSTATUS status;
+    HANDLE hFile;
+    OBJECT_ATTRIBUTES object_attributes;
+    IO_STATUS_BLOCK status_block;
+    ULONG image_file_attributes = attributes & (OBJ_CASE_INSENSITIVE | OBJ_INHERIT);
+    InitializeObjectAttributes(&object_attributes, image_file_name, image_file_attributes, NULL, NULL);
+    status = NtOpenFile(&hFile,
+            SYNCHRONIZE | FILE_EXECUTE | FILE_READ_DATA,
+            &object_attributes,
+            &status_block,
+            FILE_SHARE_DELETE | FILE_SHARE_READ,
+            FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE);
+    if (status != STATUS_SUCCESS) {
+        ERR("failed to open file (status: %#010x)\n", status);
+        return status;
+    }
+    status = NtCreateSection(section,
+            SECTION_ALL_ACCESS,
+            NULL,
+            NULL,
+            PAGE_EXECUTE,
+            SEC_IMAGE,
+            hFile);
+    if (status != STATUS_SUCCESS) {
+        ERR("failed to create section for image file (status: %#010x)\n", status);
+    }
+    NtClose(hFile);
+    return status;
+}
+
+static LPWSTR alloc_nullterminated(UNICODE_STRING str)
+{
+    WCHAR *ret = NULL;
+    USHORT len = str.Length / sizeof(WCHAR);
+    ret = (WCHAR *)RtlAllocateHeap(GetProcessHeap(), 0, str.Length + sizeof(WCHAR));
+    ret[len] = 0;
+    return ret;
+}
+
+static void free_startinfo(STARTUPINFOW *info)
+{
+    if (info->lpDesktop) RtlFreeHeap(GetProcessHeap(), 0, info->lpDesktop);
+    if (info->lpTitle) RtlFreeHeap(GetProcessHeap(), 0, info->lpTitle);
+}
+
+static SECURITY_ATTRIBUTES *maybe_sec_attrib(SECURITY_ATTRIBUTES *attribs) {
+    if (attribs->lpSecurityDescriptor) {
+        return attribs;
+    } else {
+        return NULL;
+    }
+}
+
+typedef struct {
+    HANDLE in;
+    HANDLE out;
+    HANDLE err;
+} handleset_t;
+
+static void handleset_set_all(handleset_t *set, HANDLE value) {
+    set->in = value;
+    set->out = value;
+    set->err = value;
+}
+
+// FIXME: from kernel32
+static startup_info_t *create_startup_info( LPCWSTR filename, LPCWSTR cmdline,
+                                            LPCWSTR cur_dir, LPWSTR env, DWORD flags,
+                                            const STARTUPINFOW *startup, DWORD *info_size )
+{
+    const RTL_USER_PROCESS_PARAMETERS *cur_params;
+    const WCHAR *title;
+    startup_info_t *info;
+    DWORD size, cur_dir_length;
+    void *ptr;
+    UNICODE_STRING newdir;
+    WCHAR imagepath[MAX_PATH];
+    handleset_t handleset;
+
+    lstrcpynW(imagepath, filename, MAX_PATH);
+    //if(!GetLongPathNameW( filename, imagepath, MAX_PATH ))
+    //    lstrcpynW( imagepath, filename, MAX_PATH );
+    //if(!GetFullPathNameW( imagepath, MAX_PATH, imagepath, NULL ))
+    //    lstrcpynW( imagepath, filename, MAX_PATH );
+
+    cur_params = NtCurrentTeb()->Peb->ProcessParameters;
+
+    newdir.Buffer = NULL;
+    if (cur_dir && RtlDosPathNameToNtPathName_U( cur_dir, &newdir, NULL, NULL ))
+    {
+        cur_dir = newdir.Buffer + 4;  /* skip \??\ prefix */
+        cur_dir_length = newdir.Length - 4 * sizeof(WCHAR);
+    }
+    else if (NtCurrentTeb()->Tib.SubSystemTib)  /* FIXME: hack */
+    {
+        const UNICODE_STRING *dir = &((WIN16_SUBSYSTEM_TIB *)NtCurrentTeb()->Tib.SubSystemTib)->curdir.DosPath;
+        cur_dir = dir->Buffer;
+        cur_dir_length = dir->Length;
+    }
+    else
+    {
+        const UNICODE_STRING *dir = &cur_params->CurrentDirectory.DosPath;
+        cur_dir = dir->Buffer;
+        cur_dir_length = dir->Length;
+    }
+    title = startup->lpTitle ? startup->lpTitle : imagepath;
+
+    size = sizeof(*info);
+    size += cur_dir_length;
+    size += cur_params->DllPath.Length;
+    size += strlenW( imagepath ) * sizeof(WCHAR);
+    size += strlenW( cmdline ) * sizeof(WCHAR);
+    size += strlenW( title ) * sizeof(WCHAR);
+    if (startup->lpDesktop) size += strlenW( startup->lpDesktop ) * sizeof(WCHAR);
+    /* FIXME: shellinfo */
+    if (startup->lpReserved2 && startup->cbReserved2) size += startup->cbReserved2;
+    size = (size + 1) & ~1;
+    *info_size = size;
+
+    if (!(info = RtlAllocateHeap( GetProcessHeap(), HEAP_ZERO_MEMORY, size ))) goto done;
+
+    info->console_flags = cur_params->ConsoleFlags;
+    if (flags & CREATE_NEW_PROCESS_GROUP) info->console_flags = 1;
+    if (flags & CREATE_NEW_CONSOLE) ERR("Ignoring new console flag!\n");
+
+
+    //if (startup->dwFlags & STARTF_USESTDHANDLES)
+    //{
+    //    hstdin  = startup->hStdInput;
+    //    hstdout = startup->hStdOutput;
+    //    hstderr = startup->hStdError;
+    //}
+    //else if (flags & DETACHED_PROCESS)
+    //{
+    //    hstdin  = INVALID_HANDLE_VALUE;
+    //    hstdout = INVALID_HANDLE_VALUE;
+    //    hstderr = INVALID_HANDLE_VALUE;
+    //}
+    //else
+    //{
+    //    hstdin  = GetStdHandle( STD_INPUT_HANDLE );
+    //    hstdout = GetStdHandle( STD_OUTPUT_HANDLE );
+    //    hstderr = GetStdHandle( STD_ERROR_HANDLE );
+    //}
+    if (flags & DETACHED_PROCESS) {
+        handleset_set_all(&handleset, INVALID_HANDLE_VALUE);
+    } else {
+        handleset.in = startup->hStdInput;
+        handleset.out = startup->hStdOutput;
+        handleset.err = startup->hStdError;
+    }
+    info->hstdin  = wine_server_obj_handle( handleset.in );
+    info->hstdout = wine_server_obj_handle( handleset.out );
+    info->hstderr = wine_server_obj_handle( handleset.err );
+    if ((flags & CREATE_NEW_CONSOLE) != 0)
+    {
+        /* this is temporary (for console handles). We have no way to control that the handle is invalid in child process otherwise */
+        if (is_console_handle(handleset.in))  info->hstdin  = wine_server_obj_handle( INVALID_HANDLE_VALUE );
+        if (is_console_handle(handleset.out)) info->hstdout = wine_server_obj_handle( INVALID_HANDLE_VALUE );
+        if (is_console_handle(handleset.err)) info->hstderr = wine_server_obj_handle( INVALID_HANDLE_VALUE );
+    }
+    else
+    {
+        if (is_console_handle(handleset.in))  info->hstdin  = console_handle_unmap(handleset.in);
+        if (is_console_handle(handleset.out)) info->hstdout = console_handle_unmap(handleset.out);
+        if (is_console_handle(handleset.err)) info->hstderr = console_handle_unmap(handleset.err);
+    }
+
+    info->x         = startup->dwX;
+    info->y         = startup->dwY;
+    info->xsize     = startup->dwXSize;
+    info->ysize     = startup->dwYSize;
+    info->xchars    = startup->dwXCountChars;
+    info->ychars    = startup->dwYCountChars;
+    info->attribute = startup->dwFillAttribute;
+    info->flags     = startup->dwFlags;
+    info->show      = startup->wShowWindow;
+
+    ptr = info + 1;
+    info->curdir_len = cur_dir_length;
+    memcpy( ptr, cur_dir, cur_dir_length );
+    ptr = (char *)ptr + cur_dir_length;
+    info->dllpath_len = cur_params->DllPath.Length;
+    memcpy( ptr, cur_params->DllPath.Buffer, cur_params->DllPath.Length );
+    ptr = (char *)ptr + cur_params->DllPath.Length;
+    info->imagepath_len = append_string( &ptr, imagepath );
+    info->cmdline_len = append_string( &ptr, cmdline );
+    info->title_len = append_string( &ptr, title );
+    if (startup->lpDesktop) info->desktop_len = append_string( &ptr, startup->lpDesktop );
+    if (startup->lpReserved2 && startup->cbReserved2)
+    {
+        info->runtime_len = startup->cbReserved2;
+        memcpy( ptr, startup->lpReserved2, startup->cbReserved2 );
+    }
+
+done:
+    RtlFreeUnicodeString( &newdir );
+    return info;
+}
+
+// FIXME: from kernel32
+static NTSTATUS create_struct_sd(PSECURITY_DESCRIPTOR nt_sd, struct security_descriptor **server_sd,
+                                 data_size_t *server_sd_len)
+{
+    unsigned int len;
+    PSID owner, group;
+    ACL *dacl, *sacl;
+    BOOLEAN owner_present, group_present, dacl_present, sacl_present;
+    BOOLEAN defaulted;
+    NTSTATUS status;
+    unsigned char *ptr;
+
+    if (!nt_sd)
+    {
+        *server_sd = NULL;
+        *server_sd_len = 0;
+        return STATUS_SUCCESS;
+    }
+
+    len = sizeof(struct security_descriptor);
+
+    status = RtlGetOwnerSecurityDescriptor(nt_sd, &owner, &owner_present);
+    if (status != STATUS_SUCCESS) return status;
+    status = RtlGetGroupSecurityDescriptor(nt_sd, &group, &group_present);
+    if (status != STATUS_SUCCESS) return status;
+    status = RtlGetSaclSecurityDescriptor(nt_sd, &sacl_present, &sacl, &defaulted);
+    if (status != STATUS_SUCCESS) return status;
+    status = RtlGetDaclSecurityDescriptor(nt_sd, &dacl_present, &dacl, &defaulted);
+    if (status != STATUS_SUCCESS) return status;
+
+    if (owner_present)
+        len += RtlLengthSid(owner);
+    if (group_present)
+        len += RtlLengthSid(group);
+    if (sacl_present && sacl)
+        len += sacl->AclSize;
+    if (dacl_present && dacl)
+        len += dacl->AclSize;
+
+    /* fix alignment for the Unicode name that follows the structure */
+    len = (len + sizeof(WCHAR) - 1) & ~(sizeof(WCHAR) - 1);
+    *server_sd = RtlAllocateHeap(GetProcessHeap(), 0, len);
+    if (!*server_sd) return STATUS_NO_MEMORY;
+
+    (*server_sd)->control = ((SECURITY_DESCRIPTOR *)nt_sd)->Control & ~SE_SELF_RELATIVE;
+    (*server_sd)->owner_len = owner_present ? RtlLengthSid(owner) : 0;
+    (*server_sd)->group_len = group_present ? RtlLengthSid(group) : 0;
+    (*server_sd)->sacl_len = (sacl_present && sacl) ? sacl->AclSize : 0;
+    (*server_sd)->dacl_len = (dacl_present && dacl) ? dacl->AclSize : 0;
+
+    ptr = (unsigned char *)(*server_sd + 1);
+    memcpy(ptr, owner, (*server_sd)->owner_len);
+    ptr += (*server_sd)->owner_len;
+    memcpy(ptr, group, (*server_sd)->group_len);
+    ptr += (*server_sd)->group_len;
+    memcpy(ptr, sacl, (*server_sd)->sacl_len);
+    ptr += (*server_sd)->sacl_len;
+    memcpy(ptr, dacl, (*server_sd)->dacl_len);
+
+    *server_sd_len = len;
+
+    return STATUS_SUCCESS;
+}
+
+static const BOOL is_win64 = (sizeof(void *) > sizeof(int));
+
+/***********************************************************************
+ *           get_alternate_loader
+ *
+ * Get the name of the alternate (32 or 64 bit) Wine loader.
+ */
+// FIXME: from kernel32
+static const char *get_alternate_loader( char **ret_env )
+{
+    char *env;
+    const char *loader = NULL;
+    const char *loader_env = getenv( "WINELOADER" );
+
+    *ret_env = NULL;
+
+    if (wine_get_build_dir()) loader = is_win64 ? "loader/wine" : "server/../loader/wine64";
+
+    if (loader_env)
+    {
+        int len = strlen( loader_env );
+        if (!is_win64)
+        {
+            if (!(env = RtlAllocateHeap( GetProcessHeap(), 0, sizeof("WINELOADER=") + len + 2 ))) return NULL;
+            strcpy( env, "WINELOADER=" );
+            strcat( env, loader_env );
+            strcat( env, "64" );
+        }
+        else
+        {
+            if (!(env = RtlAllocateHeap( GetProcessHeap(), 0, sizeof("WINELOADER=") + len ))) return NULL;
+            strcpy( env, "WINELOADER=" );
+            strcat( env, loader_env );
+            len += sizeof("WINELOADER=") - 1;
+            if (!strcmp( env + len - 2, "64" )) env[len - 2] = 0;
+        }
+        if (!loader)
+        {
+            if ((loader = strrchr( env, '/' ))) loader++;
+            else loader = env;
+        }
+        *ret_env = env;
+    }
+    if (!loader) loader = is_win64 ? "wine" : "wine64";
+    return loader;
+}
+
+/***********************************************************************
+ *           build_argv
+ *
+ * Build an argv array from a command-line.
+ * 'reserved' is the number of args to reserve before the first one.
+ */
+// FIXME: from kernel32
+static char **build_argv( const WCHAR *cmdlineW, int reserved )
+{
+    int argc;
+    char** argv;
+    char *arg,*s,*d,*cmdline;
+    int in_quotes,bcount,len;
+
+    len = WideCharToMultiByte( CP_UNIXCP, 0, cmdlineW, -1, NULL, 0, NULL, NULL );
+    if (!(cmdline = RtlAllocateHeap( GetProcessHeap(), 0, len ))) return NULL;
+    WideCharToMultiByte( CP_UNIXCP, 0, cmdlineW, -1, cmdline, len, NULL, NULL );
+
+    argc=reserved+1;
+    bcount=0;
+    in_quotes=0;
+    s=cmdline;
+    while (1) {
+        if (*s=='\0' || ((*s==' ' || *s=='\t') && !in_quotes)) {
+            /* space */
+            argc++;
+            /* skip the remaining spaces */
+            while (*s==' ' || *s=='\t') {
+                s++;
+            }
+            if (*s=='\0')
+                break;
+            bcount=0;
+            continue;
+        } else if (*s=='\\') {
+            /* '\', count them */
+            bcount++;
+        } else if ((*s=='"') && ((bcount & 1)==0)) {
+            /* unescaped '"' */
+            in_quotes=!in_quotes;
+            bcount=0;
+        } else {
+            /* a regular character */
+            bcount=0;
+        }
+        s++;
+    }
+    if (!(argv = RtlAllocateHeap( GetProcessHeap(), 0, argc*sizeof(*argv) + len )))
+    {
+        RtlFreeHeap( GetProcessHeap(), 0, cmdline );
+        return NULL;
+    }
+
+    arg = d = s = (char *)(argv + argc);
+    memcpy( d, cmdline, len );
+    bcount=0;
+    in_quotes=0;
+    argc=reserved;
+    while (*s) {
+        if ((*s==' ' || *s=='\t') && !in_quotes) {
+            /* Close the argument and copy it */
+            *d=0;
+            argv[argc++]=arg;
+
+            /* skip the remaining spaces */
+            do {
+                s++;
+            } while (*s==' ' || *s=='\t');
+
+            /* Start with a new argument */
+            arg=d=s;
+            bcount=0;
+        } else if (*s=='\\') {
+            /* '\\' */
+            *d++=*s++;
+            bcount++;
+        } else if (*s=='"') {
+            /* '"' */
+            if ((bcount & 1)==0) {
+                /* Preceded by an even number of '\', this is half that
+                 * number of '\', plus a '"' which we discard.
+                 */
+                d-=bcount/2;
+                s++;
+                in_quotes=!in_quotes;
+            } else {
+                /* Preceded by an odd number of '\', this is half that
+                 * number of '\' followed by a '"'
+                 */
+                d=d-bcount/2-1;
+                *d++='"';
+                s++;
+            }
+            bcount=0;
+        } else {
+            /* a regular character */
+            *d++=*s++;
+            bcount=0;
+        }
+    }
+    if (*arg) {
+        *d='\0';
+        argv[argc++]=arg;
+    }
+    argv[argc]=NULL;
+
+    RtlFreeHeap( GetProcessHeap(), 0, cmdline );
+    return argv;
+}
+
+/**********************************************************************r
+ *           exec_loader
+ */
+// FIXME: from kernel32
+static pid_t exec_loader( LPCWSTR cmd_line, unsigned int flags, int socketfd,
+                          int stdin_fd, int stdout_fd, const char *unixdir, char *winedebug,
+                          const struct binary_info *binary_info, int exec_only )
+{
+    pid_t pid;
+    char *wineloader = NULL;
+    const char *loader = NULL;
+    char **argv;
+
+    argv = build_argv( cmd_line, 1 );
+
+    if (!is_win64 ^ !(binary_info->flags & BINARY_FLAG_64BIT))
+        loader = get_alternate_loader( &wineloader );
+
+    if (exec_only || !(pid = fork()))  /* child */
+    {
+        if (exec_only || !(pid = fork()))  /* grandchild */
+        {
+            char preloader_reserve[64], socket_env[64];
+
+            if (flags & (CREATE_NEW_PROCESS_GROUP | CREATE_NEW_CONSOLE | DETACHED_PROCESS))
+            {
+                int fd = open( "/dev/null", O_RDWR );
+                setsid();
+                /* close stdin and stdout */
+                if (fd != -1)
+                {
+                    dup2( fd, 0 );
+                    dup2( fd, 1 );
+                    close( fd );
+                }
+            }
+            else
+            {
+                if (stdin_fd != -1) dup2( stdin_fd, 0 );
+                if (stdout_fd != -1) dup2( stdout_fd, 1 );
+            }
+
+            if (stdin_fd != -1) close( stdin_fd );
+            if (stdout_fd != -1) close( stdout_fd );
+
+            /* Reset signals that we previously set to SIG_IGN */
+            signal( SIGPIPE, SIG_DFL );
+
+            sprintf( socket_env, "WINESERVERSOCKET=%u", socketfd );
+            sprintf( preloader_reserve, "WINEPRELOADRESERVE=%x%08x-%x%08x",
+                     (ULONG)(binary_info->res_start >> 32), (ULONG)binary_info->res_start,
+                     (ULONG)(binary_info->res_end >> 32), (ULONG)binary_info->res_end );
+
+            putenv( preloader_reserve );
+            putenv( socket_env );
+            if (winedebug) putenv( winedebug );
+            if (wineloader) putenv( wineloader );
+            if (unixdir) chdir(unixdir);
+
+            if (argv)
+            {
+                do
+                {
+                    wine_exec_wine_binary( loader, argv, getenv("WINELOADER") );
+                }
+#ifdef __APPLE__
+                while (errno == ENOTSUP && exec_only && terminate_main_thread());
+#else
+                while (0);
+#endif
+            }
+            _exit(1);
+        }
+
+        _exit(pid == -1);
+    }
+
+    if (pid != -1)
+    {
+        /* reap child */
+        pid_t wret;
+        do {
+            wret = waitpid(pid, NULL, 0);
+        } while (wret < 0 && errno == EINTR);
+    }
+
+    RtlFreeHeap( GetProcessHeap(), 0, wineloader );
+    RtlFreeHeap( GetProcessHeap(), 0, argv );
+    return pid;
+}
+
+
+// FIXME: from kernel32
+#define NE_FFLAGS_LIBMODULE 0x8000
+/***********************************************************************
+ *           MODULE_GetBinaryType
+ */
+void MODULE_get_binary_info( HANDLE hfile, struct binary_info *info )
+{
+    union
+    {
+        struct
+        {
+            unsigned char magic[4];
+            unsigned char class;
+            unsigned char data;
+            unsigned char ignored1[10];
+            unsigned short type;
+            unsigned short machine;
+            unsigned char ignored2[8];
+            unsigned int phoff;
+            unsigned char ignored3[12];
+            unsigned short phnum;
+        } elf;
+        struct
+        {
+            unsigned char magic[4];
+            unsigned char class;
+            unsigned char data;
+            unsigned char ignored1[10];
+            unsigned short type;
+            unsigned short machine;
+            unsigned char ignored2[12];
+            unsigned long long phoff;
+            unsigned char ignored3[16];
+            unsigned short phnum;
+        } elf64;
+        struct
+        {
+            unsigned int magic;
+            unsigned int cputype;
+            unsigned int cpusubtype;
+            unsigned int filetype;
+        } macho;
+        IMAGE_DOS_HEADER mz;
+    } header;
+
+    DWORD len;
+
+    memset( info, 0, sizeof(*info) );
+
+    /* Seek to the start of the file and read the header information. */
+    if (SetFilePointer( hfile, 0, NULL, SEEK_SET ) == -1) return;
+    if (!NtReadFile( hfile, &header, sizeof(header), &len, NULL ) || len != sizeof(header)) return;
+
+    if (!memcmp( header.elf.magic, "\177ELF", 4 ))
+    {
+        if (header.elf.class == 2) info->flags |= BINARY_FLAG_64BIT;
+#ifdef WORDS_BIGENDIAN
+        if (header.elf.data == 1)
+#else
+        if (header.elf.data == 2)
+#endif
+        {
+            header.elf.type = RtlUshortByteSwap( header.elf.type );
+            header.elf.machine = RtlUshortByteSwap( header.elf.machine );
+            if (header.elf.class == 2)
+            {
+                header.elf64.phoff = RtlUlonglongByteSwap( header.elf64.phoff );
+                header.elf64.phnum = RtlUshortByteSwap( header.elf64.phnum );
+            }
+            else
+            {
+                header.elf.phoff = RtlUlongByteSwap( header.elf.phoff );
+                header.elf.phnum = RtlUshortByteSwap( header.elf.phnum );
+            }
+        }
+        switch(header.elf.type)
+        {
+        case 2: info->type = BINARY_UNIX_EXE; break;
+        case 3: info->type = BINARY_UNIX_LIB; break;
+        }
+        if (header.elf.type == 3)
+        {
+            unsigned long long phoff;
+            unsigned short phnum;
+            unsigned int type;
+            if (header.elf.class == 2)
+            {
+                phoff = header.elf64.phoff;
+                phnum = header.elf64.phnum;
+            }
+            else
+            {
+                phoff = header.elf.phoff;
+                phnum = header.elf.phnum;
+            }
+            while (phnum--)
+            {
+                if (SetFilePointer( hfile, phoff, NULL, SEEK_SET ) == -1) return;
+                if (!NtReadFile( hfile, &type, sizeof(type), &len, NULL ) || len < sizeof(type)) return;
+#ifdef WORDS_BIGENDIAN
+                if (header.elf.data == 1)
+#else
+                if (header.elf.data == 2)
+#endif
+                {
+                    type = RtlUlongByteSwap( type );
+                }
+                if (type == 3) info->type = BINARY_UNIX_EXE;
+                phoff += (header.elf.class == 2) ? 56 : 32;
+            }
+        }
+        switch(header.elf.machine)
+        {
+        case 3:   info->arch = IMAGE_FILE_MACHINE_I386; break;
+        case 20:  info->arch = IMAGE_FILE_MACHINE_POWERPC; break;
+        case 40:  info->arch = IMAGE_FILE_MACHINE_ARMNT; break;
+        case 50:  info->arch = IMAGE_FILE_MACHINE_IA64; break;
+        case 62:  info->arch = IMAGE_FILE_MACHINE_AMD64; break;
+        case 183: info->arch = IMAGE_FILE_MACHINE_ARM64; break;
+        }
+    }
+    /* Mach-o File with Endian set to Big Endian or Little Endian */
+    else if (header.macho.magic == 0xfeedface || header.macho.magic == 0xcefaedfe ||
+             header.macho.magic == 0xfeedfacf || header.macho.magic == 0xcffaedfe)
+    {
+        if ((header.macho.cputype >> 24) == 1) info->flags |= BINARY_FLAG_64BIT;
+        if (header.macho.magic == 0xcefaedfe || header.macho.magic == 0xcffaedfe)
+        {
+            header.macho.filetype = RtlUlongByteSwap( header.macho.filetype );
+            header.macho.cputype = RtlUlongByteSwap( header.macho.cputype );
+        }
+        switch(header.macho.filetype)
+        {
+        case 2: info->type = BINARY_UNIX_EXE; break;
+        case 8: info->type = BINARY_UNIX_LIB; break;
+        }
+        switch(header.macho.cputype)
+        {
+        case 0x00000007: info->arch = IMAGE_FILE_MACHINE_I386; break;
+        case 0x01000007: info->arch = IMAGE_FILE_MACHINE_AMD64; break;
+        case 0x0000000c: info->arch = IMAGE_FILE_MACHINE_ARMNT; break;
+        case 0x0100000c: info->arch = IMAGE_FILE_MACHINE_ARM64; break;
+        case 0x00000012: info->arch = IMAGE_FILE_MACHINE_POWERPC; break;
+        }
+    }
+    /* Not ELF, try DOS */
+    else if (header.mz.e_magic == IMAGE_DOS_SIGNATURE)
+    {
+        union
+        {
+            IMAGE_OS2_HEADER os2;
+            IMAGE_NT_HEADERS32 nt;
+            IMAGE_NT_HEADERS64 nt64;
+        } ext_header;
+
+        /* We do have a DOS image so we will now try to seek into
+         * the file by the amount indicated by the field
+         * "Offset to extended header" and read in the
+         * "magic" field information at that location.
+         * This will tell us if there is more header information
+         * to read or not.
+         */
+        info->type = BINARY_DOS;
+        info->arch = IMAGE_FILE_MACHINE_I386;
+        if (SetFilePointer( hfile, header.mz.e_lfanew, NULL, SEEK_SET ) == -1) return;
+        if (!NtReadFile( hfile, &ext_header, sizeof(ext_header), &len, NULL ) || len < 4) return;
+
+        /* Reading the magic field succeeded so
+         * we will try to determine what type it is.
+         */
+        if (!memcmp( &ext_header.nt.Signature, "PE\0\0", 4 ))
+        {
+            if (len >= sizeof(ext_header.nt.FileHeader))
+            {
+                static const char fakedll_signature[] = "Wine placeholder DLL";
+                char buffer[sizeof(fakedll_signature)];
+
+                info->type = BINARY_PE;
+                info->arch = ext_header.nt.FileHeader.Machine;
+                if (ext_header.nt.FileHeader.Characteristics & IMAGE_FILE_DLL)
+                    info->flags |= BINARY_FLAG_DLL;
+                if (len < sizeof(ext_header))  /* clear remaining part of header if missing */
+                    memset( (char *)&ext_header + len, 0, sizeof(ext_header) - len );
+                switch (ext_header.nt.OptionalHeader.Magic)
+                {
+                case IMAGE_NT_OPTIONAL_HDR32_MAGIC:
+                    info->res_start = ext_header.nt.OptionalHeader.ImageBase;
+                    info->res_end = info->res_start + ext_header.nt.OptionalHeader.SizeOfImage;
+                    break;
+                case IMAGE_NT_OPTIONAL_HDR64_MAGIC:
+                    info->res_start = ext_header.nt64.OptionalHeader.ImageBase;
+                    info->res_end = info->res_start + ext_header.nt64.OptionalHeader.SizeOfImage;
+                    info->flags |= BINARY_FLAG_64BIT;
+                    break;
+                }
+
+                if (header.mz.e_lfanew >= sizeof(header.mz) + sizeof(fakedll_signature) &&
+                    SetFilePointer( hfile, sizeof(header.mz), NULL, SEEK_SET ) == sizeof(header.mz) &&
+                    NtReadFile( hfile, buffer, sizeof(fakedll_signature), &len, NULL ) &&
+                    len == sizeof(fakedll_signature) &&
+                    !memcmp( buffer, fakedll_signature, sizeof(fakedll_signature) ))
+                {
+                    info->flags |= BINARY_FLAG_FAKEDLL;
+                }
+            }
+        }
+        else if (!memcmp( &ext_header.os2.ne_magic, "NE", 2 ))
+        {
+            /* This is a Windows executable (NE) header.  This can
+             * mean either a 16-bit OS/2 or a 16-bit Windows or even a
+             * DOS program (running under a DOS extender).  To decide
+             * which, we'll have to read the NE header.
+             */
+            if (len >= sizeof(ext_header.os2))
+            {
+                if (ext_header.os2.ne_flags & NE_FFLAGS_LIBMODULE) info->flags |= BINARY_FLAG_DLL;
+                switch ( ext_header.os2.ne_exetyp )
+                {
+                case 1:  info->type = BINARY_OS216; break; /* OS/2 */
+                case 2:  info->type = BINARY_WIN16; break; /* Windows */
+                case 3:  info->type = BINARY_DOS; break; /* European MS-DOS 4.x */
+                case 4:  info->type = BINARY_WIN16; break; /* Windows 386; FIXME: is this 32bit??? */
+                case 5:  info->type = BINARY_DOS; break; /* BOSS, Borland Operating System Services */
+                /* other types, e.g. 0 is: "unknown" */
+                default: info->type = BINARY_WIN16; break; // TODO: hacked
+                }
+            }
+        }
+    }
+}
+
+static NTSTATUS create_process(HANDLE token, UNICODE_STRING *path, ULONG attributes, RTL_USER_PROCESS_PARAMETERS *parameters, SECURITY_DESCRIPTOR *psd, SECURITY_DESCRIPTOR *tsd, ACCESS_MASK DesiredAccess, HANDLE Parent, BOOLEAN InheritObjectTable, HANDLE SectionHandle, HANDLE DebugPort, HANDLE ExceptionPort, PRTL_USER_PROCESS_INFORMATION info)
+{
+    startup_info_t *startup_info;
+    NTSTATUS status = STATUS_SUCCESS;
+    UINT flags = 0x0;
+    int socketfd[2], stdin_fd = -1, stdout_fd = -1;
+    flags |= CREATE_UNICODE_ENVIRONMENT;
+    if (!path) {
+        ERR("path is manditory\n");
+        return 0xc0000001;
+    }
+    if (socketpair(PF_UNIX, SOCK_STREAM, 0, socketfd) == -1)
+    {
+        return STATUS_TOO_MANY_OPENED_FILES;
+    }
+#ifdef SO_PASSCRED
+    else
+    {
+        int enable = 1;
+        setsockopt( socketfd[0], SOL_SOCKET, SO_PASSCRED, &enable, sizeof(enable) );
+    }
+#endif
+
+    struct security_descriptor *process_sd = NULL, *thread_sd = NULL;
+    data_size_t process_sd_size = 0, thread_sd_size = 0;
+
+    if (psd) {
+        status = create_struct_sd(psd, &process_sd, &process_sd_size);
+        if (status != STATUS_SUCCESS) {
+            close(socketfd[0]);
+            close(socketfd[1]);
+            return status;
+        }
+    }
+    if (tsd) {
+        status = create_struct_sd(tsd, &thread_sd, &thread_sd_size);
+        if (status != STATUS_SUCCESS) {
+            close(socketfd[0]);
+            close(socketfd[1]);
+            return status;
+        }
+    }
+
+    RtlAcquirePebLock();
+
+    LPWSTR filenameW = NULL, cmdlineW = NULL, curdirW = NULL;
+    HANDLE hFile = NULL;
+    OBJECT_ATTRIBUTES object_attributes;
+    IO_STATUS_BLOCK status_block;
+    STARTUPINFOW start_info;
+    DWORD startup_info_size;
+    WCHAR *env_end;
+    ULONG image_file_attributes = attributes & (OBJ_CASE_INSENSITIVE | OBJ_INHERIT);
+    memset(&start_info, 0, sizeof(start_info));
+    InitializeObjectAttributes(&object_attributes, path, image_file_attributes, NULL, NULL);
+    status = NtOpenFile(&hFile,
+            SYNCHRONIZE | FILE_EXECUTE | FILE_READ_DATA,
+            &object_attributes,
+            &status_block,
+            FILE_SHARE_DELETE | FILE_SHARE_READ,
+            FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE);
+    if (status != STATUS_SUCCESS) {
+        ERR("NtOpenFile failed!\n");
+        close(socketfd[1]);
+        goto done;
+    }
+    struct binary_info binary_info;
+    MODULE_get_binary_info(hFile, &binary_info);
+    filenameW = alloc_nullterminated(*path);
+    if (parameters->CommandLine.Buffer)
+	    cmdlineW = alloc_nullterminated(parameters->CommandLine);
+    if (parameters->CurrentDirectory.DosPath.Buffer)
+	    curdirW = alloc_nullterminated(parameters->CurrentDirectory.DosPath);
+    if (!parameters->Environment)
+	    parameters->Environment = NtCurrentTeb()->Peb->ProcessParameters->Environment;
+    if (parameters->Desktop.Buffer) start_info.lpDesktop = alloc_nullterminated(parameters->Desktop);
+    if (parameters->WindowTitle.Buffer) start_info.lpTitle = alloc_nullterminated(parameters->WindowTitle);
+    start_info.cb = sizeof(STARTUPINFOW);
+    start_info.dwX = parameters->dwX;
+    start_info.dwY = parameters->dwY;
+    start_info.dwXSize = parameters->dwXSize;
+    start_info.dwYSize = parameters->dwYSize;
+    start_info.dwXCountChars = parameters->dwXCountChars;
+    start_info.dwYCountChars = parameters->dwYCountChars;
+    start_info.dwFillAttribute = parameters->dwFillAttribute;
+    start_info.dwFlags = parameters->dwFlags;
+    start_info.wShowWindow = parameters->wShowWindow;
+    memcpy(&start_info.hStdInput, &parameters->hStdInput, 3 * sizeof(HANDLE));
+    if ((startup_info = create_startup_info(filenameW, cmdlineW, curdirW, parameters->Environment, parameters->Flags, &start_info, &startup_info_size))) {
+        env_end = parameters->Environment;
+        while (*env_end) {
+            env_end += strlenW(env_end) + 1;
+        }
+        env_end++;
+        wine_server_send_fd( socketfd[1] );
+        close( socketfd[1] );
+        SERVER_START_REQ( new_process )
+        {
+            req->inherit_all = InheritObjectTable;
+            req->create_flags = flags;
+            req->socket_fd = socketfd[1];
+            req->exe_file = wine_server_obj_handle( hFile );
+            req->process_access = PROCESS_ALL_ACCESS;
+            req->process_attr = attributes & (InheritObjectTable ? OBJ_INHERIT : 0x0); // FIXME: check
+            req->thread_access = THREAD_ALL_ACCESS;
+            req->thread_attr = attributes & (InheritObjectTable ? OBJ_INHERIT : 0x0); // FIXME: check
+            req->cpu = CPU_x86_64; // FIXME: hard-code
+            req->info_size = startup_info_size;
+            req->env_size = (env_end - parameters->Environment) * sizeof(WCHAR);
+            req->process_sd_size = process_sd_size;
+            req->token = wine_server_obj_handle( token );
+            wine_server_add_data(req, startup_info, startup_info_size);
+            wine_server_add_data(req, parameters->Environment, (env_end - parameters->Environment) * sizeof(WCHAR));
+            wine_server_add_data(req, process_sd, process_sd_size);
+            wine_server_add_data(req, thread_sd, thread_sd_size);
+            if (!(status = wine_server_call(req))) {
+                info->Process = wine_server_ptr_handle( reply->phandle );
+                info->Thread = wine_server_ptr_handle( reply->thandle );
+            }
+        }
+        SERVER_END_REQ;
+        if (status == STATUS_SUCCESS) {
+            if (!(flags & (CREATE_NEW_CONSOLE | DETACHED_PROCESS)))
+            {
+                if (startup_info->hstdin)
+                    wine_server_handle_to_fd( wine_server_ptr_handle(startup_info->hstdin),
+                                              FILE_READ_DATA, &stdin_fd, NULL );
+                if (startup_info->hstdout)
+                    wine_server_handle_to_fd( wine_server_ptr_handle(startup_info->hstdout),
+                                              FILE_WRITE_DATA, &stdout_fd, NULL );
+            }
+
+            exec_loader(cmdlineW, flags, socketfd[0], stdin_fd, stdout_fd, NULL, NULL, &binary_info, FALSE);
+
+            if (stdin_fd != -1) close( stdin_fd );
+            if (stdout_fd != -1) close( stdout_fd );
+        }
+        RtlFreeHeap(GetProcessHeap(), 0, startup_info);
+    }
+done:
+    RtlReleasePebLock();
+    RtlFreeHeap(GetProcessHeap(), 0, process_sd);
+    RtlFreeHeap(GetProcessHeap(), 0, thread_sd);
+    free_startinfo(&start_info);
+    if (hFile) NtClose(hFile);
+    if (filenameW) RtlFreeHeap(GetProcessHeap(), 0, filenameW);
+    if (cmdlineW) RtlFreeHeap(GetProcessHeap(), 0, cmdlineW);
+    if (curdirW) RtlFreeHeap(GetProcessHeap(), 0, curdirW);
+    close(socketfd[0]);
+    return status;
+}
+
 /**********************************************************************
  *           RtlCreateUserProcess [NTDLL.@]
  */
@@ -1660,9 +2616,138 @@ NTSTATUS WINAPI RtlCreateUserProcess(UNICODE_STRING *path, ULONG attributes, RTL
                                      HANDLE parent, BOOLEAN inherit, HANDLE debug, HANDLE exception,
                                      RTL_USER_PROCESS_INFORMATION *info)
 {
-    FIXME("(%p %u %p %p %p %p %d %p %p %p): stub\n", path, attributes, parameters, process_descriptor, thread_descriptor,
-                                     parent, inherit, debug, exception, info);
-    return STATUS_NOT_IMPLEMENTED;
+    NTSTATUS status;
+    HANDLE hSection;
+    PROCESS_BASIC_INFORMATION basic_info;
+    OBJECT_ATTRIBUTES process_attributes;
+    status = create_image_file_section(path, attributes, &hSection);
+    if (status != STATUS_SUCCESS) {
+        ERR("failed to create process image (status: %#010x)\n", status);
+        return status;
+    }
+    if (!inherit) parameters->CurrentDirectory.Handle = NULL;
+    if (!parent) parent = NtCurrentProcess();
+    InitializeObjectAttributes(&process_attributes,
+            NULL,
+            0,
+            NULL,
+            process_descriptor);
+    status = create_process(NULL,
+            path,
+            attributes,
+            parameters,
+            process_descriptor,
+            thread_descriptor,
+            PROCESS_ALL_ACCESS, 
+            parent,
+            inherit,
+            hSection,
+            debug,
+            exception,
+            info);
+    if (status == STATUS_SUCCESS) {
+        NtQuerySection(hSection,
+                SectionImageInformation,
+                &info->ImageInformation,
+                sizeof(SECTION_IMAGE_INFORMATION),
+                NULL);
+        if (status == STATUS_SUCCESS)
+            status = NtQueryInformationProcess(info->Process,
+                    ProcessBasicInformation,
+                    &basic_info,
+                    sizeof(PROCESS_BASIC_INFORMATION),
+                    NULL);
+        if (status == STATUS_SUCCESS) {
+            if (parameters->hStdInput)
+                status = NtDuplicateObject(parent,
+                        parameters->hStdInput,
+                        info->Process,
+                        &parameters->hStdInput,
+                        0,
+                        0,
+                        DUPLICATE_SAME_ACCESS);
+            if (status == STATUS_SUCCESS && parameters->hStdOutput)
+                status = NtDuplicateObject(parent,
+                        parameters->hStdOutput,
+                        info->Process,
+                        &parameters->hStdInput,
+                        0,
+                        0,
+                        DUPLICATE_SAME_ACCESS);
+            if (status == STATUS_SUCCESS && parameters->hStdError)
+                status = NtDuplicateObject(parent,
+                        parameters->hStdError,
+                        info->Process,
+                        &parameters->hStdError,
+                        0,
+                        0,
+                        DUPLICATE_SAME_ACCESS);
+            if (status == STATUS_SUCCESS) {
+            }
+        } else {
+            ERR("Could not query section/process_basic info\n");
+        }
+        NtClose(info->Process);
+    } else {
+        ERR("Could not create process (status: %#010x)\n", status);
+    }
+    NtClose(hSection);
+    //STARTUPINFOW start_info;
+    //LPWSTR pathW = NULL;
+    //LPWSTR commandLineW = NULL;
+    //LPWSTR curdirW = NULL;
+    //size_t len = 0;
+    //PROCESS_INFORMATION out_info;
+    //SECURITY_ATTRIBUTES process_attribs = { sizeof(SECURITY_ATTRIBUTES), process_descriptor, inherit };
+    //SECURITY_ATTRIBUTES thread_attribs = { sizeof(SECURITY_ATTRIBUTES), thread_descriptor, inherit };
+
+    //FIXME("(%p %u %p %p %p %p %d %p %p %p): be-hack\n", path, attributes, parameters, process_descriptor, thread_descriptor,
+    //                                 parent, inherit, debug, exception, info);
+    //if (path) pathW = alloc_nullterminated(*path);
+    //if (parameters->CommandLine.Buffer) commandLineW = alloc_nullterminated(parameters->CommandLine);
+    //if (parameters->Desktop.Buffer) start_info.lpDesktop = alloc_nullterminated(parameters->Desktop);
+    //if (parameters->WindowTitle.Buffer) start_info.lpTitle = alloc_nullterminated(parameters->WindowTitle);
+    //if (parameters->CurrentDirectory.DosPath.Buffer) curdirW = alloc_nullterminated(parameters->CurrentDirectory.DosPath);
+    //memset(&start_info, 0, sizeof(start_info));
+    //start_info.cb = sizeof(STARTUPINFOW);
+    //start_info.dwX = parameters->dwX;
+    //start_info.dwY = parameters->dwY;
+    //start_info.dwXSize = parameters->dwXSize;
+    //start_info.dwYSize = parameters->dwYSize;
+    //start_info.dwXCountChars = parameters->dwXCountChars;
+    //start_info.dwYCountChars = parameters->dwYCountChars;
+    //start_info.dwFillAttribute = parameters->dwFillAttribute;
+    //start_info.dwFlags = parameters->dwFlags;
+    //start_info.wShowWindow = parameters->wShowWindow;
+    //memcpy(&start_info.hStdInput, &parameters->hStdInput, 3 * sizeof(HANDLE));
+
+    //NTSTATUS ret = STATUS_SUCCESS;
+    //if (CreateW(pathW,
+    //            commandLineW,
+    //            maybe_sec_attrib(&process_attribs),
+    //            maybe_sec_attrib(&thread_attribs),
+    //            inherit,
+    //            (DWORD)parameters->Flags,
+    //            parameters->Environment
+    //    	curdirW,
+    //            &start_info,
+    //            &out_info)) {
+    //    info->Length = sizeof(RTL_USER_PROCESS_INFORMATION);
+    //    info-> = out_info.hProcess;
+    //    info->Thread = out_info.hThread;
+    //    memset(&info->ClientId, 0, sizeof(info->ClientId));
+    //    memset(&info->ImageInformation, 0, sizeof(SECTION_IMAGE_INFORMATION));
+    //} else {
+    //    ERR("Failed to start process\n");
+    //    ret = 0x1;
+    //}
+
+    //free_startinfo(&start_info);
+    //if (curdirW) RtlFreeHeap(GetProcessHeap(), 0, curdirW);
+    //if (commandLineW) RtlFreeHeap(GetProcessHeap(), 0, commandLineW);
+    //if (pathW) RtlFreeHeap(GetProcessHeap(), 0, pathW);
+    //return ret;
+
 }
 
 typedef struct _RTL_UNLOAD_EVENT_TRACE

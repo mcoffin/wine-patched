@@ -1469,6 +1469,7 @@
 @ cdecl -private wcstol(wstr ptr long) NTDLL_wcstol
 @ cdecl -private wcstombs(ptr ptr long) NTDLL_wcstombs
 @ cdecl -private wcstoul(wstr ptr long) NTDLL_wcstoul
+@ stdcall -private CreateProcessW(wstr wstr ptr ptr long long ptr wstr ptr ptr) kernel32.CreateProcessW
 
 ##################
 # Wine extensions
